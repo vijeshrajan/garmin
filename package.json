@@ -1,0 +1,13 @@
+{
+  "name": "garmin-dashboard",
+  "private": true,
+  "version": "1.0.0",
+  "devDependencies": {
+    "wrangler": "4.68.0"
+  },
+  "scripts": {
+    "build": "python cloud_build.py",
+    "deploy": "npm run build && wrangler deploy"
+  }
+}
+

@@ -87,6 +87,15 @@ export default {{
       return new Response(null, {{status: 204, headers: securityHeaders}});
     }}
     return new Response("Not found", {{status: 404, headers: securityHeaders}});
+  }},
+
+  async scheduled(_controller, env, ctx) {{
+    if (!env.DEPLOY_HOOK_URL) return;
+    ctx.waitUntil(
+      fetch(env.DEPLOY_HOOK_URL, {{method: "POST"}}).then(response => {{
+        if (!response.ok) throw new Error(`Scheduled cloud refresh failed: ${{response.status}}`);
+      }})
+    );
   }}
 }};
 '''
