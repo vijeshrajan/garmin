@@ -37,7 +37,10 @@ def pearson(p):
     return sum((x-xm)*(y-ym) for x,y in p)/d if d else None
 def qeffect(p):
     if len(p)<12:return None
-    p=sorted(p);n=max(3,len(p)//4);return avg(y for _,y in p[-n:])-avg(y for _,y in p[:n])
+    # Sort only by the explanatory value. Sorting full tuples would let the
+    # outcome break ties (for example many zero-load days), exaggerating the
+    # quartile effect we are trying to measure.
+    p=sorted(p,key=lambda item:item[0]);n=max(3,len(p)//4);return avg(y for _,y in p[-n:])-avg(y for _,y in p[:n])
 
 # Normalize Garmin records.
 acts=[]
@@ -93,6 +96,7 @@ for x in load('sleep.json',[]):
         'spo2':num(x.get('averageSpO2Value')),'spo2_min':num(x.get('lowestSpO2Value')),
         'respiration':num(x.get('averageRespirationValue')),'sleep_stress':num(x.get('avgSleepStress')),
         'need_min':num(nested(x,'sleepNeed','actual')),
+        'start_ms':num(x.get('sleepStartTimestampLocal')),
     }
 for x in load('hrv.json',[]):
     d=day(x.get('calendarDate'))
@@ -280,11 +284,259 @@ if ratio is not None and ratio>1.4:suggestions.append(('Absorb the load','Seven-
 if not suggestions:suggestions.append(('Keep the rhythm','Recovery is close to baseline. Keep training consistent and avoid sudden jumps in load.'))
 suggestions=suggestions[:3]
 
+# Evidence-led insights requested by the user. These deliberately use matched
+# observations and the user's own baselines. They describe association, not
+# causation, and expose sample size / data limitations in the rendered cards.
+daily_loads=defaultdict(float)
+for a in acts:daily_loads[a['d']]+=a['load']
+
+def week_stats(start):
+    dates=[start+timedelta(days=i) for i in range(7)]
+    week_acts=[a for a in acts if a['d'] in dates]
+    return {
+        'start':start,
+        'run_km':sum(a['km'] for a in week_acts if a['run']),
+        'load':sum(a['load'] for a in week_acts),
+        'rhr':avg(daily.get(d,{}).get('rhr') for d in dates),
+        'sessions':len(week_acts),
+    }
+
+complete_week_starts=[mon-timedelta(weeks=i) for i in range(12,0,-1)]
+insight_weeks=[week_stats(start) for start in complete_week_starts]
+last_complete=insight_weeks[-1]
+prior_four=insight_weeks[-5:-1]
+prior_run_km=avg(w['run_km'] for w in prior_four)
+prior_rhr=avg(w['rhr'] for w in prior_four)
+run_km_delta=last_complete['run_km']-prior_run_km if prior_run_km is not None else None
+rhr_week_delta=last_complete['rhr']-prior_rhr if last_complete['rhr'] is not None and prior_rhr is not None else None
+if prior_run_km and last_complete['run_km']>=prior_run_km*1.1 and rhr_week_delta is not None and rhr_week_delta>=2:
+    fitness_fatigue_title='Load is rising faster than recovery'
+    fitness_fatigue_summary='You ran more than your recent norm while resting heart rate also rose. That combination can accompany accumulated fatigue.'
+    fitness_fatigue_action='Keep the next run easy and watch whether resting HR returns toward baseline over 2–3 mornings.'
+    fitness_fatigue_tone='warning'
+elif prior_run_km and last_complete['run_km']>=prior_run_km*.9 and rhr_week_delta is not None and rhr_week_delta<=0:
+    fitness_fatigue_title='Fitness signals are supporting the work'
+    fitness_fatigue_summary='Running volume held or increased while resting heart rate stayed stable or fell versus the prior four-week norm.'
+    fitness_fatigue_action='Continue the gradual build; avoid turning a good week into a sudden load jump.'
+    fitness_fatigue_tone='positive'
+elif rhr_week_delta is not None and rhr_week_delta>=2:
+    fitness_fatigue_title='Recovery looks more strained than fitness'
+    fitness_fatigue_summary='Resting heart rate rose even without a clear increase in weekly running distance.'
+    fitness_fatigue_action='Use sleep, HRV and how you feel to decide whether to reduce intensity temporarily.'
+    fitness_fatigue_tone='warning'
+else:
+    fitness_fatigue_title='Fitness and fatigue signals are mixed'
+    fitness_fatigue_summary='Weekly distance and resting heart rate do not yet point strongly in the same direction.'
+    fitness_fatigue_action='Keep the next two weeks consistent; clearer patterns need repeated, comparable weeks.'
+    fitness_fatigue_tone='neutral'
+
+week_table_rows=''.join(
+    f'<tr><th>{w["start"]:%d %b}</th><td>{w["run_km"]:.1f} km</td><td>{fmt(w["rhr"],0," bpm")}</td></tr>'
+    for w in insight_weeks[-6:]
+)
+fitness_week_table=f'<table class="paired-table"><thead><tr><th>Week of</th><th>Running</th><th>Avg RHR</th></tr></thead><tbody>{week_table_rows}</tbody></table>'
+
+def pace_at_hr(points,target):
+    if len(points)<3:return None
+    hrs=[x for x,_ in points];paces=[y for _,y in points];hm,pm=avg(hrs),avg(paces)
+    denom=sum((x-hm)**2 for x in hrs)
+    slope=sum((x-hm)*(y-pm) for x,y in points)/denom if denom else 0
+    return pm+slope*(target-hm)
+
+z2_floor=num(running_zone.get('zone2Floor'));z3_floor=num(running_zone.get('zone3Floor'))
+runs90=[a for a in runs if a['d']>=TODAY-timedelta(days=89) and a['pace'] and a['avg_hr'] and 3<=a['pace']<=12 and a['hrs']>=.3]
+easy_runs90=[a for a in runs90 if (z2_floor is None or a['avg_hr']>=z2_floor) and (z3_floor is None or a['avg_hr']<z3_floor)]
+comparison_runs=easy_runs90 if len(easy_runs90)>=6 else runs90
+same_hr_target=round(statistics.median(a['avg_hr'] for a in comparison_runs)) if comparison_runs else None
+same_hr_recent_points=[(a['avg_hr'],a['pace']) for a in comparison_runs if a['d']>=TODAY-timedelta(days=44)]
+same_hr_prior_points=[(a['avg_hr'],a['pace']) for a in comparison_runs if TODAY-timedelta(days=89)<=a['d']<TODAY-timedelta(days=44)]
+same_hr_recent=pace_at_hr(same_hr_recent_points,same_hr_target) if same_hr_target is not None else None
+same_hr_prior=pace_at_hr(same_hr_prior_points,same_hr_target) if same_hr_target is not None else None
+same_hr_change_sec=(same_hr_recent-same_hr_prior)*60 if same_hr_recent is not None and same_hr_prior is not None else None
+if same_hr_change_sec is not None and same_hr_change_sec<=-5:
+    same_hr_title=f'Easy pace is {abs(same_hr_change_sec):.0f} sec/km faster at the same HR'
+    same_hr_summary='Your adjusted pace improved while holding average heart rate constant across the two halves of the last 90 days.'
+    same_hr_action='Treat this as encouraging economy evidence; confirm it on similar routes and conditions.'
+    same_hr_tone='positive'
+elif same_hr_change_sec is not None and same_hr_change_sec>=5:
+    same_hr_title=f'Pace is {same_hr_change_sec:.0f} sec/km slower at the same HR'
+    same_hr_summary='The recent 45-day adjusted pace is slower at the comparison heart rate, which can reflect fatigue, heat, hills or detraining.'
+    same_hr_action='Compare route, temperature and recovery before changing training from this signal alone.'
+    same_hr_tone='warning'
+elif same_hr_change_sec is not None:
+    same_hr_title='Pace at the same HR is broadly stable'
+    same_hr_summary='The adjusted difference between the two 45-day periods is small.'
+    same_hr_action='Keep collecting comparable easy runs; small changes are easily masked by terrain and weather.'
+    same_hr_tone='neutral'
+else:
+    same_hr_title='More comparable easy runs are needed'
+    same_hr_summary='Each 45-day window needs at least three runs with usable average heart rate and pace.'
+    same_hr_action='Record easy runs consistently on similar terrain to unlock this comparison.'
+    same_hr_tone='neutral'
+
+body_battery_pairs=[]
+for d,v in daily.items():
+    if d<TODAY-timedelta(days=179) or v.get('body_battery_max') is None:continue
+    body_battery_pairs.append((daily_loads.get(d-timedelta(days=1),0),v['body_battery_max']))
+body_battery_r=pearson(body_battery_pairs);body_battery_effect=qeffect(body_battery_pairs)
+if body_battery_effect is not None and body_battery_effect<=-5:
+    battery_title=f'Harder days precede {abs(body_battery_effect):.0f} points less morning energy'
+    battery_summary='After higher-load days, the next day’s Body Battery maximum was lower than after the lightest-load days.'
+    battery_action='After high-load sessions, protect food, hydration and sleep and avoid stacking intensity automatically.'
+    battery_tone='warning'
+elif body_battery_effect is not None and body_battery_effect>=5:
+    battery_title=f'Higher-load days preceded {body_battery_effect:.0f} points higher Body Battery max'
+    battery_summary='This positive association likely reflects that harder training tends to happen during stronger recovery cycles; it does not show that training caused the higher value.'
+    battery_action='Use the pattern to notice readiness cycles, not as a reason to train hard whenever Body Battery is high.'
+    battery_tone='neutral'
+elif body_battery_effect is not None:
+    battery_title='Body Battery is fairly resilient to prior-day load'
+    battery_summary='Next-day Body Battery maximum changes little between your highest- and lowest-load days.'
+    battery_action='Use Body Battery with HRV, resting HR and perceived soreness rather than as a stand-alone green light.'
+    battery_tone='positive' if body_battery_effect>=0 else 'neutral'
+else:
+    battery_title='Body Battery response needs more matched days'
+    battery_summary='There are not yet enough next-day Body Battery observations for a stable comparison.'
+    battery_action='Keep wearing the watch overnight and refresh the dashboard regularly.'
+    battery_tone='neutral'
+
+last_week_dates=[mon-timedelta(days=7)+timedelta(days=i) for i in range(7)]
+last_week_sleep=avg(sleep.get(d,{}).get('hours') for d in last_week_dates)
+last_week_need=avg((sleep.get(d,{}).get('need_min')/60) if sleep.get(d,{}).get('need_min') is not None else None for d in last_week_dates)
+last_week_sleep_gap=last_week_sleep-last_week_need if last_week_sleep is not None and last_week_need is not None else None
+last_week_load=sum(daily_loads.get(d,0) for d in last_week_dates)
+last_week_runs=sum(a['km'] for a in acts if a['run'] and a['d'] in last_week_dates)
+
+zone_seconds_28=[sum(a['zones'][i] for a in runs if a['d']>=TODAY-timedelta(days=27)) for i in range(5)]
+zone_seconds_total=sum(zone_seconds_28);easy_zone_pct=(sum(zone_seconds_28[:2])/zone_seconds_total*100) if zone_seconds_total else None
+hard_zone_pct=(sum(zone_seconds_28[2:])/zone_seconds_total*100) if zone_seconds_total else None
+
+last_week_load_ratio=(insight_weeks[-1]['load']/insight_weeks[-2]['load']) if insight_weeks[-2]['load'] else None
+load_jumps=[(insight_weeks[i]['load']/insight_weeks[i-1]['load'],insight_weeks[i]) for i in range(1,len(insight_weeks)) if insight_weeks[i-1]['load']>0]
+biggest_jump=max(load_jumps,key=lambda x:x[0],default=(None,None))
+
+next_hrv_pairs=[(load_value,hrv[d+timedelta(days=1)]['night']) for d,load_value in daily_loads.items() if load_value>0 and d+timedelta(days=1) in hrv and hrv[d+timedelta(days=1)].get('night') is not None and d>=TODAY-timedelta(days=179)]
+next_hrv_r=pearson(next_hrv_pairs);next_hrv_effect=qeffect(next_hrv_pairs)
+if next_hrv_effect is not None and next_hrv_effect>=2:
+    hrv_load_title='Higher-load days were followed by higher HRV in this sample'
+    hrv_load_summary='This likely reflects that harder sessions happened during stronger readiness cycles; it does not show that hard training raised HRV.'
+    hrv_load_action='Judge the next hard session from the current HRV range, resting HR, sleep and how you feel.'
+    hrv_load_tone='neutral'
+elif next_hrv_effect is not None and next_hrv_effect<=-2:
+    hrv_load_title='Higher-load days were followed by lower HRV'
+    hrv_load_summary='The next night after harder active days averaged lower HRV than after lighter active days.'
+    hrv_load_action='Avoid stacking demanding sessions when HRV also falls below your own balanced range.'
+    hrv_load_tone='warning'
+else:
+    hrv_load_title='Training load has a weak next-night HRV relationship'
+    hrv_load_summary='High- and low-load active days have produced similar next-night HRV so far.'
+    hrv_load_action='Use a 3–4 day cluster with resting HR and sleep, not a single HRV reading.'
+    hrv_load_tone='neutral'
+stress_sleep_pairs=[(daily[d]['stress'],sleep[d+timedelta(days=1)]['score']) for d in daily if daily[d].get('stress') is not None and d+timedelta(days=1) in sleep and sleep[d+timedelta(days=1)].get('score') is not None and d>=TODAY-timedelta(days=179)]
+stress_sleep_r=pearson(stress_sleep_pairs);stress_sleep_effect=qeffect(stress_sleep_pairs)
+
+sleep28=[sleep[d] for d in sorted(sleep) if d>=TODAY-timedelta(days=27) and sleep[d].get('need_min') is not None]
+sleep_need_met=sum(v['hours']*60>=v['need_min'] for v in sleep28)
+sleep_need_gap=avg(v['hours']-v['need_min']/60 for v in sleep28)
+bedtime_pairs=[]
+for v in sleep.values():
+    if v.get('start_ms') is None:continue
+    start_dt=datetime.fromtimestamp(v['start_ms']/1000)
+    bedtime_hour=start_dt.hour+start_dt.minute/60+(24 if start_dt.hour<12 else 0)
+    bedtime_pairs.append((bedtime_hour,v['hours']))
+bedtime_r=pearson(bedtime_pairs);bedtime_effect=qeffect(bedtime_pairs)
+if len(bedtime_pairs)>=12:
+    bed_x=[x for x,_ in bedtime_pairs];bed_y=[y for _,y in bedtime_pairs];bed_xm,bed_ym=avg(bed_x),avg(bed_y)
+    bed_denom=sum((x-bed_xm)**2 for x in bed_x)
+    bedtime_minutes_per_hour=(sum((x-bed_xm)*(y-bed_ym) for x,y in bedtime_pairs)/bed_denom*60) if bed_denom else None
+else:bedtime_minutes_per_hour=None
+if bedtime_minutes_per_hour is not None and bedtime_minutes_per_hour<=-5:
+    bedtime_title=f'Each hour later bedtime aligns with {abs(bedtime_minutes_per_hour):.0f} minutes less sleep'
+    bedtime_summary='Later sleep onset is associated with shorter total sleep in your recorded nights.'
+    bedtime_action='Test a fixed wind-down alarm 30 minutes earlier for two weeks and compare the next report.'
+    bedtime_tone='warning'
+elif bedtime_minutes_per_hour is not None:
+    bedtime_title='Bedtime timing has a weak link with sleep duration'
+    bedtime_summary='Your recorded sleep onset explains little of the variation in total sleep so far.'
+    bedtime_action='Keep wake time and wind-down routine consistent; reassess as more nights accumulate.'
+    bedtime_tone='neutral'
+else:
+    bedtime_title='Not enough bedtime timestamps yet'
+    bedtime_summary='The feed includes too few historical sleep-start timestamps to estimate this relationship responsibly.'
+    bedtime_action='Keep sleep-window detection enabled; this card will calculate automatically when enough timestamps arrive.'
+    bedtime_tone='neutral'
+
+if last_week_sleep_gap is not None and last_week_sleep_gap<-.5:
+    monday_change='Protect 30–45 minutes more time in bed on at least four nights this week.'
+elif last_week_load_ratio is not None and last_week_load_ratio>1.3:
+    monday_change='Hold training load near last week and make the next demanding session depend on recovery.'
+elif easy_zone_pct is not None and easy_zone_pct<70:
+    monday_change='Shift one run toward Zones 1–2 so hard work stays purposeful instead of becoming the default.'
+elif not any('strength' in a['key'] and a['d'] in last_week_dates for a in acts):
+    monday_change='Add one short strength session when recovery is supportive.'
+else:
+    monday_change='Keep the same rhythm and avoid a sudden jump in distance or load.'
+
+last_week_load_detail=(f'{signed((last_week_load_ratio-1)*100,0,"% ")}vs prior week' if last_week_load_ratio is not None else ('previous week had 0 load' if insight_weeks[-2]['load']==0 else 'prior-week comparison unavailable'))
+last_week_jump_summary=(f'Last complete week was {fmt((last_week_load_ratio-1)*100,0,"%")} versus the prior week.' if last_week_load_ratio is not None else f'Last complete week rose from {insight_weeks[-2]["load"]:.0f} to {insight_weeks[-1]["load"]:.0f} load, so a percentage change would be misleading.')
+
+def coach_metric(label,value,detail=''):
+    return f'<div><small>{html.escape(label)}</small><strong>{html.escape(value)}</strong><span>{html.escape(detail)}</span></div>'
+def coach_card(kicker,title,summary,metrics,action,footer,tone='neutral',extra=''):
+    metrics_html=''.join(coach_metric(*metric) for metric in metrics)
+    return f'''<article class="coach-card {tone}"><header><span>{html.escape(kicker)}</span><b>{html.escape(title)}</b></header><p>{html.escape(summary)}</p><div class="coach-metrics">{metrics_html}</div>{extra}<div class="coach-action"><small>What to try</small><strong>{html.escape(action)}</strong></div><footer>{html.escape(footer)}</footer></article>'''
+
+top_insights_html=''.join([
+    coach_card('Fitness or fatigue',fitness_fatigue_title,fitness_fatigue_summary,[
+        ('Last week running',fmt(last_complete['run_km'],1,' km'),f'{signed(run_km_delta,1," km")} vs prior 4-week average'),
+        ('Last week resting HR',fmt(last_complete['rhr'],0,' bpm'),f'{signed(rhr_week_delta,1," bpm")} vs prior 4-week average'),
+    ],fitness_fatigue_action,'Six complete Monday–Sunday weeks · distance and RHR shown together',fitness_fatigue_tone,fitness_week_table),
+    coach_card('Same-heart-rate pace',same_hr_title,same_hr_summary,[
+        ('Recent 45 days',pace_text(same_hr_recent),f'adjusted to {fmt(same_hr_target,0," bpm")}'),
+        ('Previous 45 days',pace_text(same_hr_prior),f'{len(same_hr_prior_points)} comparable runs'),
+        ('Change',f'{signed(same_hr_change_sec,0," sec/km")}',f'{len(same_hr_recent_points)} recent runs'),
+    ],same_hr_action,'Regression-adjusted comparison · similar routes and weather improve confidence',same_hr_tone),
+    coach_card('Body Battery after training',battery_title,battery_summary,[
+        ('Association',f'r {body_battery_r:+.2f}' if body_battery_r is not None else '—',f'{len(body_battery_pairs)} matched days'),
+        ('High vs low load',f'{signed(body_battery_effect,1," points")}', 'next-day maximum'),
+    ],battery_action,'Daily maximum is used as a morning proxy because the feed has no timestamped wake value',battery_tone),
+    coach_card(f'Monday report · {mon:%d %b}',f'Last week: {last_week_load:.0f} load and {last_week_runs:.1f} km running','A compact review of the last complete Monday–Sunday week.',[
+        ('Training load',fmt(last_week_load,0),last_week_load_detail),
+        ('Average sleep',fmt(last_week_sleep,1,' h'),f'{signed(last_week_sleep_gap,1," h")} vs sleep need'),
+        ('Sleep need',fmt(last_week_need,1,' h'),'Garmin personalised estimate'),
+    ],monday_change,'Regenerated on every refresh; the Monday card always uses the last complete week','priority'),
+])
+
+pattern_cards_html=''.join([
+    coach_card('Sleep need','Sleep compared with what Garmin estimates your body needs',f'You met estimated sleep need on {sleep_need_met} of {len(sleep28)} measured nights in the last 28 days.',[
+        ('Average gap',fmt(sleep_need_gap,1,' h'),'actual sleep minus need'),
+    ],'Test a consistent lights-out window for two weeks, then reassess the gap.','Garmin sleep need is a personalised estimate, not a medical requirement','warning' if sleep_need_gap is not None and sleep_need_gap<-.5 else 'neutral'),
+    coach_card('Intensity balance','How much running is easy versus hard', 'Heart-rate-zone time from runs in the last 28 days.',[
+        ('Zones 1–2',fmt(easy_zone_pct,0,'%'),'easy aerobic time'),
+        ('Zones 3–5',fmt(hard_zone_pct,0,'%'),'moderate-to-hard time'),
+    ],'Keep most weekly running easy enough that quality sessions remain distinct.','Zone time only · sessions without HR-zone data are excluded','positive' if easy_zone_pct is not None and easy_zone_pct>=70 else 'warning'),
+    coach_card('Weekly load jumps','Where training load changed suddenly',last_week_jump_summary,[
+        ('Largest 12-week jump',fmt((biggest_jump[0]-1)*100 if biggest_jump[0] is not None else None,0,'%'),f'week of {biggest_jump[1]["start"]:%d %b}' if biggest_jump[1] else '—'),
+    ],'Treat a large jump as a prompt to protect recovery, not as proof that the week was harmful.','Complete Monday–Sunday weeks; a jump is flagged by context, not a hard medical threshold','warning' if last_week_load_ratio is not None and last_week_load_ratio>1.3 else 'neutral'),
+    coach_card('HRV after hard days',hrv_load_title,hrv_load_summary,[
+        ('Association',f'r {next_hrv_r:+.2f}' if next_hrv_r is not None else '—',f'{len(next_hrv_pairs)} matched days'),
+        ('High vs low load',fmt(next_hrv_effect,1,' ms'),'next-night HRV difference'),
+        ('Current range',f'{fmt(current_hrv.get("balanced_low"),0)}–{fmt(current_hrv.get("balanced_high"),0)} ms',f'latest night {fmt(current_hrv.get("night"),0," ms")}'),
+    ],hrv_load_action,'Garmin balanced range is your personal normal-range reference',hrv_load_tone),
+    coach_card('Daytime stress → sleep','Whether stressful days align with that night’s sleep score','Pairs daytime average stress with the sleep score that follows.',[
+        ('Association',f'r {stress_sleep_r:+.2f}' if stress_sleep_r is not None else '—',f'{len(stress_sleep_pairs)} matched days'),
+        ('High vs low stress',fmt(stress_sleep_effect,0,' points'),'next sleep-score difference'),
+    ],'On high-stress days, test a repeatable wind-down routine and compare the next four weeks.','Pattern in your data · association does not prove cause','warning' if stress_sleep_effect is not None and stress_sleep_effect<-5 else 'neutral'),
+    coach_card('Bedtime → sleep duration',bedtime_title,bedtime_summary,[
+        ('Per hour later',fmt(bedtime_minutes_per_hour,0,' min'),f'r {bedtime_r:+.2f}' if bedtime_r is not None else 'correlation unavailable'),
+        ('Later vs earlier',fmt(bedtime_effect*60 if bedtime_effect is not None else None,0,' min'),f'{len(bedtime_pairs)} usable nights'),
+    ],bedtime_action,'Sleep-start time and total sleep · association does not prove cause',bedtime_tone),
+])
+
 # Correlations + effect sizes + reasoning.
 pairs1=[(sleep[d]['hours'],daily[d]['rhr']) for d in sleep.keys()&daily.keys() if daily[d]['rhr'] is not None]
 pairs2=[(hrv[d]['night'],daily[d]['rhr']) for d in hrv.keys()&daily.keys() if hrv[d]['night'] is not None and daily[d]['rhr'] is not None]
-loads=defaultdict(float)
-for a in acts:loads[a['d']]+=a['load']
+loads=daily_loads
 pairs3=[(v,hrv[d+timedelta(days=1)]['night']) for d,v in loads.items() if v and d+timedelta(days=1) in hrv and hrv[d+timedelta(days=1)]['night'] is not None]
 pairs4=[(sleep[d]['hours'],daily[d]['body_battery_charge']) for d in sleep.keys()&daily.keys() if daily[d].get('body_battery_charge') is not None]
 rels=[]
@@ -384,10 +636,11 @@ doc=f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" c
 @media(max-width:880px){{.hero{{grid-template-columns:1fr}}.flow{{grid-template-columns:1fr 1fr}}.step:after{{display:none}}.pillars{{grid-template-columns:1fr 1fr}}.relationships{{grid-template-columns:1fr}}}}@media(max-width:620px){{.nav nav{{display:none}}.verdict,.goal{{padding:22px}}.flow,.signals,.charts{{grid-template-columns:1fr}}.metrics{{grid-template-columns:1fr 1fr}}.pillars,.records{{grid-template-columns:1fr}}.head{{display:block}}.head p{{text-align:left;margin-top:5px}}}}
 </style><style>
 .nav>div{{width:min(1160px,calc(100% - 28px));margin:auto;height:60px;display:flex;align-items:center;justify-content:space-between}}.nav-actions{{display:flex;align-items:center;gap:11px;width:auto!important;margin:0!important}}.refresh-btn{{border:0;background:var(--ink);color:white;border-radius:10px;padding:9px 13px;font-weight:900;cursor:pointer;white-space:nowrap}}.refresh-btn:hover{{background:var(--blue)}}.refresh-btn:disabled{{opacity:.6;cursor:wait}}.refresh-state{{font-size:.72rem;color:var(--muted)}}.week-summary{{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:18px;padding:18px 20px;border-radius:18px;margin-bottom:12px}}.week-ring{{--score:0;width:78px;height:78px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--red) calc(var(--score)*1%),#e9edf2 0);position:relative}}.week-ring:before{{content:'';position:absolute;inset:8px;border-radius:50%;background:white}}.week-ring b{{position:relative;font-size:1.35rem}}.week-overview h3{{margin:0 0 4px}}.week-overview p{{margin:0;color:var(--muted)}}.recovery-now{{text-align:right}}.recovery-now small,.recovery-now strong{{display:block}}.recovery-now small{{color:var(--muted);text-transform:uppercase;font-weight:900}}.recovery-now strong{{font-size:1.35rem}}.week-days{{display:grid;grid-template-columns:repeat(7,minmax(150px,1fr));gap:9px;overflow-x:auto;padding:2px 2px 8px}}.day{{background:white;border:1px solid var(--line);border-radius:15px;padding:13px;min-height:255px;box-shadow:var(--shadow)}}.day.today{{border:2px solid var(--red)}}.day.future{{opacity:.62}}.day header{{display:flex;justify-content:space-between;align-items:start}}.day header small,.day header strong{{display:block}}.day header small{{text-transform:uppercase;color:var(--muted);font-weight:900}}.day-score{{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:#edf3ff;color:var(--blue);font-weight:950}}.effect{{font-weight:900;margin:15px 0 6px}}.day>p{{font-size:.76rem;color:var(--muted);min-height:54px}}.day-metrics{{display:grid;gap:4px;border-top:1px solid var(--line);padding-top:9px;font-size:.76rem}}.day-metrics span{{display:flex;justify-content:space-between}}.day footer{{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid var(--line);font-size:.72rem}}.suggestions{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}}.suggestions article{{background:#eef6ff;border:1px solid #d9e8fb;border-radius:13px;padding:14px}}.suggestions p{{font-size:.8rem;color:var(--muted);margin:5px 0 0}}@media(max-width:880px){{.suggestions{{grid-template-columns:1fr}}}}@media(max-width:620px){{.nav nav,.refresh-state{{display:none}}.refresh-btn{{padding:8px 10px}}.week-summary{{grid-template-columns:auto 1fr}}.recovery-now{{grid-column:1/-1;text-align:left}}}}
-</style></head><body><div class="nav"><div><b>MY <i>SUB-4</i> DASHBOARD</b><div class="nav-actions"><nav><a href="#today">Today</a><a href="#morning">Morning</a><a href="#week">Week</a><a href="#training">Training</a><a href="#running">Running</a><a href="#health">Health</a></nav><span id="refreshState" class="refresh-state">Last: {last_refresh_display}<small>Auto every 2 hours</small></span><button id="refreshButton" class="refresh-btn" type="button">↻ Refresh data</button></div></div></div><main class="wrap"><div id="refreshToast" class="refresh-toast" role="status"></div>
+</style></head><body><div class="nav"><div><b>MY <i>SUB-4</i> DASHBOARD</b><div class="nav-actions"><nav><a href="#today">Today</a><a href="#morning">Morning</a><a href="#insights">Insights</a><a href="#week">Week</a><a href="#training">Training</a><a href="#running">Running</a><a href="#health">Health</a></nav><span id="refreshState" class="refresh-state">Last: {last_refresh_display}<small>Auto every 2 hours</small></span><button id="refreshButton" class="refresh-btn" type="button">↻ Refresh data</button></div></div></div><main class="wrap"><div id="refreshToast" class="refresh-toast" role="status"></div>
 <section class="hero" id="today"><article class="verdict"><div class="eyebrow">Today’s read · {TODAY:%d %B %Y}</div><h1>{html.escape(verdict)}</h1><p>{html.escape(action)}</p><span class="chip">Primary focus: consistency</span></article><aside class="goal"><div class="eyebrow">Your goal</div><div class="big">SUB 4:00<small>Marathon · 5:41 per km</small></div><div class="goal-grid"><div><small>Latest run</small><strong>{gaptext}</strong></div><div><small>Longest run</small><strong>{fmt(lr['km'] if lr else None,1,' km')}</strong></div></div></aside></section>
 <section class="section"><div class="head"><div><div class="eyebrow">Reasoning trail</div><h2>Why it says that</h2></div><p>Every conclusion is traceable to your baseline.</p></div><div class="card reason"><div class="reason-top"><b>Signal chain</b><span class="quality">{quality} data coverage</span></div><div class="flow"><div class="step"><small>1 · Training</small><strong>{load7:.0f} load · {dist:.1f} km</strong><p>Last 7 days vs typical {typload:.0f} load and {typdist:.1f} km.</p></div><div class="step"><small>2 · Sleep</small><strong>{fmt(s7,1,' h')}</strong><p>{signed(sd,1,' h')} vs your prior baseline.</p></div><div class="step"><small>3 · Body response</small><strong>HRV {signed(hd,1,'%')} · RHR {signed(rd,1)}</strong><p>Two recovery markers read together.</p></div><div class="step"><small>4 · Decision</small><strong>{html.escape(verdict)}</strong><p>{html.escape(action)}</p></div></div></div><div class="signals">{signals}</div><details><summary>How recovery is calculated</summary><p>Recovery is separate from training load. It combines HRV, resting heart rate and sleep versus your previous 28-day baseline. A missing workout never lowers recovery. Current recovery: <b>{rec if rec is not None else '—'}/100 ({rec_label})</b>. Directional training aid, not medical advice.</p></details></section>
 <section class="section" id="morning"><div class="head"><div><div class="eyebrow">Morning report · {latest_sleep_date:%d %b %Y}</div><h2>Can I absorb training today?</h2></div><p>Official Garmin measurements, combined with a transparent dashboard score.</p></div><div class="insight-grid">{morning_cards_html}</div><details><summary>How to use this morning check</summary><p><b>{morning_label}:</b> the dashboard score is not Garmin Training Readiness. It weights your recovery trend 40%, sleep score 25%, Body Battery 20% and inverse stress 15%, using only available fields. Look for a 3–4 day cluster, not one noisy reading. A low Pulse Ox value can be affected by fit, movement or altitude; sustained or concerning readings belong with a clinician.</p></details></section>
+<section class="section" id="insights"><div class="head"><div><div class="eyebrow">Insights from your own data</div><h2>What is worth acting on?</h2></div><p>Evidence, confidence and one practical experiment—not just charts.</p></div><div class="insight-notice"><b>Observations, not medical advice.</b><span>Patterns show what tends to move together in your Garmin data; they do not prove what caused the change.</span></div><div class="coach-grid">{top_insights_html}</div><div class="subhead"><div><div class="eyebrow">Patterns worth testing</div><h3>Go beyond the headline metrics</h3></div><p>Each card states its time window and data limitation.</p></div><div class="pattern-grid">{pattern_cards_html}</div></section>
 <section class="section" id="week"><div class="head"><div><div class="eyebrow" id="weekRangeLabel">Monday–Sunday · {mon:%d %b}–{(mon+timedelta(days=6)):%d %b}</div><h2 id="weekHeading">This week at a glance</h2></div><p>Slide through recent weeks; every scorecard uses the same transparent method.</p></div><div class="week-navigator" aria-label="Choose a training week"><button id="weekPrev" type="button" aria-label="Previous week">←</button><div class="week-slider"><div><b id="weekSliderLabel">Current week</b><span id="weekSliderCount">Week {len(week_history)} of {len(week_history)}</span></div><input id="weekSlider" type="range" min="0" max="{len(week_history)-1}" value="{len(week_history)-1}" step="1" aria-label="Training week"></div><button id="weekNext" type="button" aria-label="Next week" disabled>→</button><button id="weekCurrent" class="current-week-btn" type="button">Current week</button></div><div class="week-recap" id="weekRecap" aria-live="polite">{week_recap_html}</div><div class="card week-summary" id="weekSummary"><div class="week-ring" id="weekRing" style="--score:{week_score}"><b id="weekScore">{week_score}</b></div><div class="week-overview"><h3 id="weekEffect">{html.escape(week_effect)}</h3><p id="weekTotals">{week_sessions} sessions · {week_km:.1f} km · {week_load:.0f} load. Score = 40% volume, 30% consistency and 30% recovery.</p></div><div class="recovery-now"><small id="weekRecoveryLabel">Estimated remaining recovery</small><strong id="weekRecovery">{'Recovered' if remaining_recovery==0 else f'~{remaining_recovery} h'}</strong></div></div><div class="week-days" id="weekDays">{week_cards}</div><div id="weekCurrentAdvice"><div class="suggestions">{suggestions_html}</div><details><summary>How daily scores and recovery time are estimated</summary><p>A day score uses up to 50 points for useful training stimulus, 20 for alignment with running/strength goals, and 30 for matching effort to that day’s HRV, resting HR and sleep. No-activity days are marked as recovery-only rather than automatically good or bad. Recovery time is a local estimate from duration and training load; it is not Garmin’s official recovery-time field.</p></details></div></section>
 <section class="section" id="training"><div class="head"><div><div class="eyebrow">Training dose + intent</div><h2>What system did the work train?</h2></div><p>Acute load, intensity minutes, load focus and per-session Training Effect.</p></div><div class="training-grid"><article class="card training-card"><small>Acute training load</small><strong>{load7:.0f}</strong><p>{fmt(ratio,1,'×')} your previous four-week weekly average. {html.escape('A large jump raises fatigue and injury risk.' if ratio and ratio>1.4 else 'Load is within your recent pattern.')}</p></article><article class="card training-card"><small>Intensity minutes</small><strong>{week_intensity:.0f} / {intensity_goal:.0f}</strong><p>{week_mod:.0f} moderate + {week_vig:.0f} vigorous minutes; vigorous counts double toward Garmin’s goal.</p></article><article class="card training-card wide"><small>28-day load focus</small><div class="stack">{focus_bar}</div><div class="stack-legend">{focus_legend}</div><p>For marathon development, most load should accumulate aerobically while harder work stays purposeful.</p></article><article class="card training-card"><small>Latest session effect</small><strong>{fmt(latest_session['aerobic_te'] if latest_session else None,1)} aerobic · {fmt(latest_session['anaerobic_te'] if latest_session else None,1)} anaerobic</strong><p>{html.escape(latest_session['te_label'] if latest_session and latest_session['te_label'] else 'No label')} · {html.escape(latest_session_context)}</p></article><article class="card training-card wide"><small>Latest run heart-rate distribution</small><div class="stack">{zone_bar}</div><div class="stack-legend compact">{zone_legend}</div><p>{html.escape(latest_run_context)} · avg HR {fmt(latest_run['avg_hr'] if latest_run else None,0,' bpm')}. Use this to confirm an easy run stayed easy or a quality session reached its intended zones.</p></article><article class="card training-card"><small>Strength context</small><strong>{len(strength)} sessions / 28d</strong><p>Garmin captures session fatigue and intensity minutes, but not progressive overload quality. Keep weight × reps × sets in a logbook.</p></article></div></section>
 <section class="section" id="goal"><div class="head"><div><div class="eyebrow">Sub-4 marathon</div><h2>Five things that move the goal</h2></div><p>Every bar names its benchmark.</p></div><div class="pillars">{pill_html}</div></section>
@@ -399,7 +652,7 @@ doc=f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" c
 <article class="card chart-card"><div class="chart-head"><div><h3>Sleep</h3><p>7d {fmt(s7,1,' h')} · baseline {fmt(sb,1,' h')}</p></div><div class="range" data-id="sleepChart"><button data-days="30">30d</button><button class="active" data-days="90">90d</button><button data-days="365">1y</button></div></div><svg id="sleepChart" viewBox="0 0 800 240"></svg></article><article class="card chart-card"><div class="chart-head"><div><h3>Weight</h3><p>Latest {fmt(wlatest,1,' kg')} · change {signed(wchange,1,' kg')} · only {len(weights)} weigh-ins</p></div></div><svg id="weightChart" viewBox="0 0 800 240"></svg></article></div></section>
 <section class="section" id="relationships"><div class="head"><div><div class="eyebrow">Personal relationships</div><h2>What actually moves together</h2></div><p>Effect size + interpretation + action.</p></div><div class="relationships">{rel_html}</div><details><summary>How to read correlation</summary><p><b>r</b> runs from −1 to +1. The sign is direction; distance from zero is strength. Quartile comparisons show the real-world size. Association does not prove cause.</p></details></section>
 <section class="section" id="coverage"><div class="head"><div><div class="eyebrow">Data coverage</div><h2>Important guide metrics not in this feed</h2></div><p>Visible gaps prevent false confidence.</p></div><div class="missing-grid">{missing_html}</div></section>
-<section class="section"><div class="head"><div><div class="eyebrow">Reference points</div><h2>Your standout days</h2></div></div><div class="records">{records_html}</div></section><footer class="footer">{len(acts)} activities · updated {TODAY:%d %b %Y} · private local dashboard · not medical advice</footer></main><div id="tip"></div>
+<section class="section"><div class="head"><div><div class="eyebrow">Reference points</div><h2>Your standout days</h2></div></div><div class="records">{records_html}</div></section><footer class="footer">{len(acts)} activities · updated {TODAY:%d %b %Y} · private dashboard · not medical advice</footer></main><div id="tip"></div>
 <script>const DATA={js},NS='http://www.w3.org/2000/svg',tip=document.getElementById('tip');const mk=(t,a={{}})=>{{let e=document.createElementNS(NS,t);Object.entries(a).forEach(([k,v])=>e.setAttribute(k,v));return e}};function show(e,s){{tip.innerHTML=s;tip.style.display='block';tip.style.left=Math.min(e.clientX+12,innerWidth-245)+'px';tip.style.top=Math.max(8,e.clientY-25)+'px'}}function axes(svg,min,max){{let b={{l:44,r:786,t:14,bt:198}};for(let i=0;i<4;i++){{let y=b.t+(b.bt-b.t)*i/3;svg.append(mk('line',{{x1:b.l,y1:y,x2:b.r,y2:y,class:'gridline'}}));let tx=mk('text',{{x:38,y:y+4,'text-anchor':'end'}});tx.textContent=(max-(max-min)*i/3).toFixed(0);svg.append(tx)}}return b}}function line(id,src,color,unit,days=90,extra=null){{let svg=document.getElementById(id);svg.innerHTML='';if(!src.length){{svg.innerHTML='<text x="400" y="110" text-anchor="middle">Not enough data</text>';return}}let end=new Date(src.at(-1).d),start=new Date(end);start.setDate(end.getDate()-days+1);let p=src.filter(x=>new Date(x.d)>=start),vs=p.map(x=>x.v),lo=Math.min(...vs),hi=Math.max(...vs),pad=Math.max((hi-lo)*.15,unit===' kg'?.4:unit===' index'?.03:1);lo-=pad;hi+=pad;if(['bodyBatteryChart','stressChart','sleepScoreChart','spo2Chart'].includes(id)){{lo=Math.max(0,lo);hi=Math.min(100,hi)}}let b=axes(svg,lo,hi),x=i=>b.l+(b.r-b.l)*(p.length==1?.5:i/(p.length-1)),y=v=>b.bt-(v-lo)/(hi-lo)*(b.bt-b.t);svg.append(mk('path',{{d:p.map((q,i)=>(i?'L':'M')+x(i)+','+y(q.v)).join(' '),fill:'none',stroke:color,'stroke-width':3}}));p.forEach((q,i)=>{{let c=mk('circle',{{cx:x(i),cy:y(q.v),r:7,fill:'transparent',tabindex:0}}),s=`<b>${{q.d}}</b><br>${{q.v.toFixed(unit===' kg'?1:unit===' h'||unit===' index'?2:0)}}${{unit}}${{extra?extra(q):''}}`;c.onpointerenter=e=>show(e,s);c.onpointermove=e=>show(e,s);c.onpointerleave=()=>tip.style.display='none';svg.append(c)}})}}function bars(id,key,color,unit){{let svg=document.getElementById(id),p=DATA.weeks,m=Math.max(...p.map(x=>x[key]),1),b=axes(svg,0,m),slot=(b.r-b.l)/p.length,w=slot*.62;p.forEach((q,i)=>{{let h=q[key]/m*(b.bt-b.t),r=mk('rect',{{x:b.l+i*slot+(slot-w)/2,y:b.bt-h,width:w,height:Math.max(h,2),rx:4,fill:color}}),s=`<b>Week of ${{q.d}}</b><br>${{q[key].toFixed(1)}}${{unit}} · ${{q.sessions}} sessions · ${{q.hours.toFixed(1)}} h`;r.onpointerenter=e=>show(e,s);r.onpointermove=e=>show(e,s);r.onpointerleave=()=>tip.style.display='none';svg.append(r)}})}}let cfg={{rhrChart:[DATA.rhr,'#ed4337',' bpm',null],hrvChart:[DATA.hrv,'#2774df',' ms',null],sleepChart:[DATA.sleep,'#7157db',' h',q=>`<br>Deep ${{q.deep.toFixed(1)}} h · REM ${{q.rem.toFixed(1)}} h`],efficiencyChart:[DATA.efficiency,'#168f5b',' index',null],bodyBatteryChart:[DATA.bodyBattery,'#2774df','',null],stressChart:[DATA.stress,'#ff8b2c','',null],sleepScoreChart:[DATA.sleepScore,'#7157db','',null],spo2Chart:[DATA.spo2,'#168f5b','%',null]}};bars('distanceChart','distance','#ed4337',' km');bars('loadChart','load','#ff8b2c',' load');Object.entries(cfg).forEach(([id,c])=>line(id,...c,90));line('weightChart',DATA.weight,'#168f5b',' kg',365);document.querySelectorAll('.range').forEach(g=>g.onclick=e=>{{if(e.target.tagName!='BUTTON')return;g.querySelectorAll('button').forEach(b=>b.classList.remove('active'));e.target.classList.add('active');line(g.dataset.id,...cfg[g.dataset.id],Number(e.target.dataset.days))}});</script></body></html>'''
 doc=doc.replace("Object.entries(cfg).forEach(([id,c])=>line(id,...c,90))","Object.entries(cfg).forEach(([id,c])=>line(id,c[0],c[1],c[2],90,c[3]))")
 doc=doc.replace("line(g.dataset.id,...cfg[g.dataset.id],Number(e.target.dataset.days))","(()=>{let c=cfg[g.dataset.id];line(g.dataset.id,c[0],c[1],c[2],Number(e.target.dataset.days),c[3])})()")
@@ -409,8 +662,10 @@ status_css="""<style>
 .insight-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.insight{background:white;border:1px solid var(--line);box-shadow:var(--shadow);border-radius:15px;padding:16px;min-width:0}.insight.primary{background:linear-gradient(145deg,#17202a,#29384a);color:white}.insight.wide{grid-column:span 2}.insight small,.training-card>small{display:block;text-transform:uppercase;letter-spacing:.06em;font-size:.66rem;font-weight:900;color:var(--muted)}.insight.primary small{color:#b9c6d6}.insight strong{display:block;font-size:1.35rem;line-height:1.2;margin:8px 0;overflow-wrap:anywhere}.insight span{display:block;color:var(--muted);font-size:.76rem}.insight.primary span{color:#d3dbe5}
 .training-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}.training-card{padding:18px;border-radius:16px}.training-card.wide{grid-column:span 2}.training-card>strong{display:block;font-size:1.45rem;line-height:1.25;margin:8px 0}.training-card p{font-size:.8rem;color:var(--muted);margin:8px 0 0}.stack{height:13px;display:flex;overflow:hidden;border-radius:99px;background:#e9edf2;margin:14px 0 9px}.stack>i{display:block;min-width:0}.stack-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:.72rem;color:var(--muted)}.stack-legend span{display:flex;align-items:center;gap:5px}.stack-legend i{width:8px;height:8px;border-radius:50%;display:inline-block}.stack-legend.compact{gap:9px}.solo{margin-top:12px}.health-charts{margin-top:12px}.missing-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.missing-grid article{background:#fff8ec;border:1px solid #f2dfbb;border-radius:14px;padding:15px}.missing-grid p{color:var(--muted);font-size:.78rem;margin:6px 0 0}
 .week-navigator{display:grid;grid-template-columns:auto minmax(220px,1fr) auto auto;align-items:center;gap:10px;background:#17202a;color:white;border-radius:16px;padding:12px 14px;margin-bottom:11px;box-shadow:var(--shadow)}.week-navigator>button{border:0;border-radius:10px;background:#ffffff18;color:white;font-weight:900;min-height:42px;padding:0 14px;cursor:pointer}.week-navigator>button:hover:not(:disabled){background:#ffffff2b}.week-navigator>button:disabled{opacity:.35;cursor:not-allowed}.week-navigator .current-week-btn{background:white;color:var(--ink);white-space:nowrap}.week-slider>div{display:flex;justify-content:space-between;gap:12px;margin-bottom:5px;font-size:.76rem}.week-slider span{color:#b9c6d6}.week-slider input{width:100%;accent-color:var(--red);cursor:pointer}.week-recap{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:11px}.week-recap article{background:#edf5ff;border:1px solid #d5e6fb;border-radius:14px;padding:13px 15px}.week-recap small,.week-recap strong,.week-recap span{display:block}.week-recap small{text-transform:uppercase;color:var(--blue);font-size:.65rem;font-weight:900;letter-spacing:.05em}.week-recap strong{margin:4px 0;font-size:.92rem}.week-recap span{color:var(--muted);font-size:.74rem}
-@media(max-width:1000px){.nav a{display:none}.insight-grid{grid-template-columns:repeat(2,1fr)}.training-grid{grid-template-columns:repeat(2,1fr)}.missing-grid{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:620px){.insight-grid,.training-grid,.missing-grid{grid-template-columns:1fr}.insight.wide,.training-card.wide{grid-column:auto}.refresh-state{max-width:112px;font-size:.62rem}.refresh-state small{font-size:.54rem}.refresh-btn{padding:8px 9px}.health-grid{grid-template-columns:1fr 1fr}.week-navigator{grid-template-columns:auto 1fr auto}.week-navigator .current-week-btn{grid-column:1/-1}.week-recap{grid-template-columns:1fr}.week-summary{grid-template-columns:auto 1fr}.recovery-now{grid-column:1/-1;text-align:left}}
+.insight-notice{display:flex;gap:8px;align-items:flex-start;background:#fffbea;border:1px solid #eedf9c;border-radius:14px;padding:13px 15px;margin-bottom:12px}.insight-notice b{white-space:nowrap}.insight-notice span{color:var(--muted)}.coach-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.pattern-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.coach-card{background:white;border:1px solid var(--line);border-top:5px solid #8c98a5;border-radius:16px;box-shadow:var(--shadow);padding:18px;min-width:0;display:flex;flex-direction:column}.coach-card.positive{border-top-color:var(--green)}.coach-card.warning{border-top-color:var(--orange)}.coach-card.priority{border-top-color:var(--blue);background:linear-gradient(180deg,#f5f9ff,#fff 38%)}.coach-card header span{display:block;text-transform:uppercase;letter-spacing:.08em;font-size:.66rem;font-weight:900;color:var(--muted)}.coach-card header b{display:block;font-size:1.15rem;line-height:1.25;margin-top:5px}.coach-card>p{color:var(--muted);font-size:.82rem;margin:9px 0 12px}.coach-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}.coach-metrics>div{background:#f6f8fb;border:1px solid #e9edf2;border-radius:11px;padding:10px;min-width:0}.coach-metrics small,.coach-metrics strong,.coach-metrics span{display:block}.coach-metrics small{text-transform:uppercase;font-size:.61rem;font-weight:900;color:var(--muted)}.coach-metrics strong{font-size:1.18rem;margin:3px 0;overflow-wrap:anywhere}.coach-metrics span{font-size:.68rem;color:var(--muted)}.coach-action{background:#fffbea;border:1px solid #eee1a9;border-radius:11px;padding:11px 12px;margin-top:11px}.coach-action small,.coach-action strong{display:block}.coach-action small{text-transform:uppercase;letter-spacing:.06em;font-size:.6rem;font-weight:900;color:#8a6b00}.coach-action strong{font-size:.78rem;margin-top:3px}.coach-card footer{color:var(--muted);font-size:.66rem;border-top:1px solid var(--line);padding-top:9px;margin-top:11px}.paired-table{width:100%;border-collapse:collapse;margin-top:11px;font-size:.7rem}.paired-table th,.paired-table td{padding:5px 7px;border-bottom:1px solid var(--line);text-align:right}.paired-table th:first-child{text-align:left}.paired-table thead th{color:var(--muted);text-transform:uppercase;font-size:.58rem}.subhead{display:flex;align-items:end;justify-content:space-between;gap:16px;margin:25px 0 12px}.subhead h3{font-size:1.35rem;margin:2px 0 0}.subhead p{color:var(--muted);margin:0;text-align:right;font-size:.8rem}
+@media(max-width:1000px){.nav a{display:none}.insight-grid{grid-template-columns:repeat(2,1fr)}.training-grid{grid-template-columns:repeat(2,1fr)}.missing-grid{grid-template-columns:repeat(2,1fr)}.pattern-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:720px){.coach-grid{grid-template-columns:1fr}.insight-notice{display:block}.insight-notice b{display:block;margin-bottom:3px}.subhead{display:block}.subhead p{text-align:left;margin-top:4px}}
+@media(max-width:620px){.insight-grid,.training-grid,.missing-grid,.pattern-grid{grid-template-columns:1fr}.insight.wide,.training-card.wide{grid-column:auto}.refresh-state{max-width:112px;font-size:.62rem}.refresh-state small{font-size:.54rem}.refresh-btn{padding:8px 9px}.health-grid{grid-template-columns:1fr 1fr}.week-navigator{grid-template-columns:auto 1fr auto}.week-navigator .current-week-btn{grid-column:1/-1}.week-recap{grid-template-columns:1fr}.week-summary{grid-template-columns:auto 1fr}.recovery-now{grid-column:1/-1;text-align:left}}
 @media(max-width:420px){.health-grid{grid-template-columns:1fr}.nav b{font-size:.78rem}.nav-actions{gap:6px!important}.refresh-state{max-width:90px;font-size:.56rem}.refresh-btn{font-size:.72rem}}
 </style>"""
 doc=doc.replace('</head>',status_css+'</head>')
