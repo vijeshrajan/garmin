@@ -3,6 +3,7 @@ data/
 dist/
 dashboard.html
 node_modules/
+__pycache__/
 .wrangler/
 .dev.vars*
 !.dev.vars.example
