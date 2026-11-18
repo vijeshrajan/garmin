@@ -9,6 +9,13 @@
   },
   "observability": {
     "enabled": true
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "FITNESS_DB",
+      "database_name": "garmin-advisor",
+      "database_id": "523d273e-5268-4354-b047-62c236314841"
+    }
+  ]
 }
 

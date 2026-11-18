@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "name": "5-day PPL + Upper/Lower with easy runs",
+  "effective_from": "2026-11-16",
+  "week_starts_on": "monday",
+  "location_default": "gym",
+  "global_rules": {
+    "phase": "restart",
+    "phase_weeks": 4,
+    "rir_target": { "restart": "2-3", "build": "1-2" },
+    "rest_seconds": { "compound": [120, 180], "isolation": [60, 120] },
+    "warmup": "5-8 min general warm-up, then 1-2 light ramp sets on the first lift",
+    "progression_rule": "When every working set reaches the top of the rep range in 2 consecutive sessions, add the smallest available weight step next session. At home with fixed dumbbells, add 1-2 reps or slow the lowering phase to 3 seconds instead.",
+    "missed_session_rule": "Never stack a missed session onto a later day. Mark it missed and continue the plan.",
+    "readiness_downgrade": "On a MODIFY verdict: 2 working sets per exercise at RIR 3, drop the last 2 exercises, replace the run with a 30-min walk. On a REST verdict: walk only."
+  },
+  "heart_rate_zones": {
+    "source": "Garmin custom zones shown in the portal",
+    "lthr": 166,
+    "max_hr": 189,
+    "z1": [90, 144],
+    "z2": [145, 152],
+    "z3": [153, 160],
+    "z4": [161, 169],
+    "z5": [170, 189]
+  },
+  "weekly_schedule": [
+    { "day": "monday",    "strength": "day3_legs",  "run": null },
+    { "day": "tuesday",   "strength": "day1_push",  "run": "easy_treadmill" },
+    { "day": "wednesday", "strength": "day2_pull",  "run": "easy_treadmill" },
+    { "day": "thursday",  "strength": "day5_lower", "run": null },
+    { "day": "friday",    "strength": "day4_upper", "run": "easy_treadmill" },
+    { "day": "saturday",  "strength": null,         "run": "long_run" },
+    { "day": "sunday",    "strength": null,         "run": null, "note": "Rest and recovery" }
+  ],
+  "runs": {
+    "easy_treadmill": {
+      "label": "Easy run",
+      "surface": "treadmill",
+      "duration_min": 30,
+      "target_distance_km": 4.0,
+      "hr_cap_bpm": 152,
+      "rule": "Heart-rate cap overrides distance. If HR goes above 152, slow down or walk 1 minute. Finishing under 4 km is acceptable.",
+      "order_with_strength": "Lift first, run after, or run in a separate time slot.",
+      "garmin_activity_types": ["treadmill_running", "running"]
+    },
+    "long_run": {
+      "label": "Long run",
+      "surface": "outdoor",
+      "target_distance_km": null,
+      "target_distance_note": "USER TO SET. Current longest run in the last 90 days is 5.0 km.",
+      "hr_cap_bpm": 152,
+      "progression_rule": "Increase by at most 1 km per week, and only after 2 consecutive weeks with all planned runs completed.",
+      "garmin_activity_types": ["running", "trail_running"]
+    }
+  },
+  "strength_sessions": {
+    "day1_push": {
+      "label": "Day 1 · Push",
+      "focus": ["chest", "shoulders", "triceps"],
+      "garmin_activity_types": ["strength_training"],
+      "exercises": [
+        { "id": "incline_db_press",      "name": "Incline dumbbell press",       "target": "upper chest", "sets": "3-4", "reps": "8-10 or 6-8", "type": "compound",  "home_substitute": "Dumbbell floor press, 10 kg pair" },
+        { "id": "barbell_bench_press",   "name": "Barbell bench press",          "target": "chest",       "sets": "3-4", "reps": "8-10 or 6-8", "type": "compound",  "home_substitute": "Push-ups, feet elevated when 15+ reps is easy" },
+        { "id": "machine_chest_press",   "name": "Machine chest press",          "target": "mid chest",   "sets": "3-4", "reps": "8-10 or 6-8", "type": "compound",  "home_substitute": "Push-ups, slow 3-second lowering" },
+        { "id": "cable_fly",             "name": "Cable flys",                   "target": "chest (stretch)", "sets": "3-4", "reps": "8-10 or 6-8", "type": "isolation", "home_substitute": "Floor dumbbell fly, 7.5 kg pair" },
+        { "id": "db_shoulder_press",     "name": "Dumbbell shoulder press",      "target": "shoulders",   "sets": "3-4", "reps": "8-10 or 6-8", "type": "compound",  "home_substitute": "Standing dumbbell press, 7.5 or 10 kg" },
+        { "id": "lateral_raise",         "name": "Lateral raises",               "target": "side delts",  "sets": "3-4", "reps": "8-10 or 6-8", "type": "isolation", "home_substitute": "Lateral raises, 2-3 kg" },
+        { "id": "rope_pushdown",         "name": "Rope pushdown",                "target": "triceps",     "sets": "3-4", "reps": "8-10 or 6-8", "type": "isolation", "home_substitute": "Chair dips or close-grip push-ups" },
+        { "id": "overhead_tri_ext",      "name": "Overhead triceps extension",   "target": "triceps (long head)", "sets": "3-4", "reps": "8-10 or 6-8", "type": "isolation", "home_substitute": "Single dumbbell overhead extension, 10 kg" }
+      ]
+    },
+    "day2_pull": {
+      "label": "Day 2 · Pull",
+      "focus": ["back", "biceps", "rear delts"],
+      "garmin_activity_types": ["strength_training"],
+      "exercises": [
+        { "id": "pull_up",            "name": "Pull-ups",                "target": "lats",     "sets": "2-3", "reps": "6-8",   "type": "compound",  "home_substitute": "Bent-over dumbbell row, 10 kg pair" },
+        { "id": "seated_cable_row",   "name": "Seated cable row",        "target": "mid back", "sets": "2-3", "reps": "8-10",  "type": "compound",  "home_substitute": "Kettlebell bent-over row" },
+        { "id": "lat_pulldown",       "name": "Lat pulldown",            "target": "lats",     "sets": "2-3", "reps": "8-10",  "type": "compound",  "home_substitute": "Dumbbell pullover on the floor, 10 kg" },
+        { "id": "one_arm_db_row",     "name": "One-arm dumbbell row",    "target": "mid back", "sets": "2-3", "reps": "6-8",   "type": "compound",  "home_substitute": "One-arm dumbbell row, 10 kg, slow lowering" },
+        { "id": "face_pull",          "name": "Face pulls",              "target": "rear delts", "sets": "2-3", "reps": "12-15", "type": "isolation", "home_substitute": "Bent-over reverse fly, 2-3 kg" },
+        { "id": "incline_db_curl",    "name": "Incline dumbbell curls",  "target": "biceps",   "sets": "2-3", "reps": "8-10",  "type": "isolation", "home_substitute": "Dumbbell curl, 7.5 kg" },
+        { "id": "barbell_curl",       "name": "Barbell curls",           "target": "biceps",   "sets": "2-3", "reps": "6-8",   "type": "isolation", "home_substitute": "Dumbbell curl, 10 kg" },
+        { "id": "hammer_curl",        "name": "Hammer curls",            "target": "biceps (brachialis)", "sets": "2-3", "reps": "8-10", "type": "isolation", "home_substitute": "Hammer curl, 7.5 kg" }
+      ]
+    },
+    "day3_legs": {
+      "label": "Day 3 · Legs",
+      "focus": ["quads", "hamstrings", "glutes", "calves"],
+      "garmin_activity_types": ["strength_training"],
+      "exercises": [
+        { "id": "back_squat",          "name": "Barbell back squat",   "target": "quads",              "sets": "2-3", "reps": "6-8",   "type": "compound",  "home_substitute": "Goblet squat, kettlebell or 10 kg dumbbell" },
+        { "id": "leg_press",           "name": "Leg press",            "target": "quads, glutes",      "sets": "2-3", "reps": "8-10",  "type": "compound",  "home_substitute": "Bulgarian split squat, bodyweight or 7.5 kg pair" },
+        { "id": "romanian_deadlift",   "name": "Romanian deadlift",    "target": "hamstrings, glutes", "sets": "2-3", "reps": "6-8",   "type": "compound",  "home_substitute": "Dumbbell RDL, 10 kg pair" },
+        { "id": "db_lunge",            "name": "Dumbbell lunges",      "target": "quads, glutes",      "sets": "2-3", "reps": "8-10",  "type": "compound",  "home_substitute": "Dumbbell lunges, 7.5 kg pair" },
+        { "id": "lying_leg_curl",      "name": "Lying leg curl",       "target": "hamstrings",         "sets": "2-3", "reps": "8-10",  "type": "isolation", "home_substitute": "Single-leg hip bridge on the mat" },
+        { "id": "leg_extension",       "name": "Leg extension",        "target": "quads",              "sets": "2-3", "reps": "12-15", "type": "isolation", "home_substitute": "Heel-elevated goblet squat, slow tempo" },
+        { "id": "seated_calf_raise",   "name": "Seated calf raise",    "target": "calves",             "sets": "2-3", "reps": "12-15", "type": "isolation", "home_substitute": "Seated calf raise with dumbbells on knees" },
+        { "id": "standing_calf_raise", "name": "Standing calf raise",  "target": "calves",             "sets": "2-3", "reps": "12-15", "type": "isolation", "home_substitute": "Single-leg calf raise holding a 10 kg dumbbell" }
+      ]
+    },
+    "day4_upper": {
+      "label": "Day 4 · Upper body",
+      "focus": ["chest", "back", "shoulders", "arms"],
+      "garmin_activity_types": ["strength_training"],
+      "exercises": [
+        { "id": "barbell_bench_press", "name": "Barbell bench press",        "target": "chest",       "sets": "2-3", "reps": "6-8",   "type": "compound",  "home_substitute": "Push-ups, feet elevated" },
+        { "id": "seated_cable_row",    "name": "Seated cable row",           "target": "mid back",    "sets": "2-3", "reps": "8-10",  "type": "compound",  "home_substitute": "Bent-over dumbbell row, 10 kg pair" },
+        { "id": "incline_db_press",    "name": "Incline dumbbell press",     "target": "upper chest", "sets": "2-3", "reps": "8-10",  "type": "compound",  "home_substitute": "Dumbbell floor press, 10 kg pair" },
+        { "id": "lat_pulldown",        "name": "Lat pulldown",               "target": "lats",        "sets": "2-3", "reps": "6-8",   "type": "compound",  "home_substitute": "Dumbbell pullover on the floor, 10 kg" },
+        { "id": "seated_db_shoulder_press", "name": "Seated dumbbell shoulder press", "target": "shoulders", "sets": "2-3", "reps": "6-8", "type": "compound", "home_substitute": "Standing dumbbell press, 10 kg" },
+        { "id": "db_bicep_curl",       "name": "Dumbbell bicep curl",        "target": "biceps",      "sets": "2-3", "reps": "8-10",  "type": "isolation", "home_substitute": "Dumbbell curl, 7.5 kg" },
+        { "id": "rope_pushdown",       "name": "Rope triceps pushdown",      "target": "triceps",     "sets": "2-3", "reps": "8-10",  "type": "isolation", "home_substitute": "Single dumbbell overhead extension, 10 kg" },
+        { "id": "lateral_raise",       "name": "Lateral raises",             "target": "side delts",  "sets": "2-3", "reps": "12-15", "type": "isolation", "home_substitute": "Lateral raises, 2-3 kg" }
+      ]
+    },
+    "day5_lower": {
+      "label": "Day 5 · Lower body",
+      "focus": ["quads", "hamstrings", "glutes", "calves"],
+      "garmin_activity_types": ["strength_training"],
+      "exercises": [
+        { "id": "back_squat",          "name": "Barbell back squat",   "target": "quads",              "sets": "2-3", "reps": "6-8",   "type": "compound",  "home_substitute": "Goblet squat, kettlebell or 10 kg dumbbell" },
+        { "id": "leg_press",           "name": "Leg press",            "target": "quads, glutes",      "sets": "2-3", "reps": "8-10",  "type": "compound",  "home_substitute": "Bulgarian split squat, bodyweight or 7.5 kg pair" },
+        { "id": "romanian_deadlift",   "name": "Romanian deadlift",    "target": "hamstrings, glutes", "sets": "2-3", "reps": "6-8",   "type": "compound",  "home_substitute": "Dumbbell RDL, 10 kg pair" },
+        { "id": "db_lunge",            "name": "Dumbbell lunges",      "target": "quads, glutes",      "sets": "2-3", "reps": "8-10",  "type": "compound",  "home_substitute": "Dumbbell lunges, 7.5 kg pair" },
+        { "id": "lying_leg_curl",      "name": "Lying leg curl",       "target": "hamstrings",         "sets": "2-3", "reps": "8-10",  "type": "isolation", "home_substitute": "Single-leg hip bridge on the mat" },
+        { "id": "leg_extension",       "name": "Leg extension",        "target": "quads",              "sets": "2-3", "reps": "12-15", "type": "isolation", "home_substitute": "Heel-elevated goblet squat, slow tempo" },
+        { "id": "standing_calf_raise", "name": "Standing calf raise",  "target": "calves",             "sets": "2-3", "reps": "12-15", "type": "isolation", "home_substitute": "Single-leg calf raise holding a 10 kg dumbbell" }
+      ]
+    }
+  },
+  "coach_flags": [
+    "Day 3 and Day 5 share 7 of their exercises; the portal should show this overlap on the Plan screen.",
+    "Push day at 3-4 sets x 8 exercises is 24-32 working sets; during the restart phase the portal should prescribe the low end.",
+    "Thursday lower-body day is 2 days before the Saturday long run; the portal should flag a long run done with high leg soreness from the check-in."
+  ]
+}
+
+

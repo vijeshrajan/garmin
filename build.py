@@ -800,5 +800,10 @@ sleep_detail=f"7-day average {fmt(s7,1,' h')}; latest night {fmt(current_sleep.g
 if current_sleep.get('need_min'):sleep_detail+=f" Latest Garmin sleep-need estimate: {current_sleep['need_min']/60:.1f} h."
 doc=restructure(doc,dict(date=TODAY.strftime('%d %b %Y'),verdict=verdict,action=action,quality=quality,stale=stale_recovery or coverage<4,cautious=verdict!='Train as planned',runs28=len(rr),distance7=dist,sleep_detail=sleep_detail,long90=lr90['km'] if lr90 else 0,longall=lr['km'] if lr else 0,pace_label=pace_label,pace_detail=pace_detail,dates={label:d.strftime('%d %b %Y') if d else 'Unavailable' for label,d in [('Daily',latest_daily_date),('Sleep',latest_sleep_date),('HRV',latest_hrv_date)]}))
 
-OUT.write_text(doc,encoding='utf-8');print(f'Dashboard built: {OUT}')
+OUT.write_text(doc,encoding='utf-8')
+
+# Preserve the proven Garmin ingestion and derived-metric layer above, then let
+# the plan-aware renderer own the final five-screen presentation.
+from advisor_portal import build as build_plan_aware_advisor
+build_plan_aware_advisor()
 

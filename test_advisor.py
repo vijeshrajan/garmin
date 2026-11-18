@@ -15,13 +15,18 @@ class AdvisorBuildTests(unittest.TestCase):
     def build(self, records):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ('build.py', 'advisor_ui.py', 'advisor.js', 'advisor.css'):
+            for name in ('build.py', 'advisor_ui.py', 'advisor.js', 'advisor.css', 'advisor_portal.py', 'advisor_engine.py', 'routine.json'):
                 shutil.copyfile(ROOT / name, root / name)
             (root / 'data').mkdir()
             for name, value in records.items():
                 (root / 'data' / name).write_text(json.dumps(value), encoding='utf-8')
             subprocess.run([sys.executable, str(root/'build.py')], check=True, capture_output=True)
             return (root/'dashboard.html').read_text(encoding='utf-8')
+
+    @staticmethod
+    def embedded_data(result):
+        payload = result.split('const DATA=', 1)[1]
+        return json.JSONDecoder().raw_decode(payload)[0]
 
     def records(self, age=0):
         today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
@@ -32,23 +37,32 @@ class AdvisorBuildTests(unittest.TestCase):
             'hrv.json': [{'calendarDate':d,'lastNightAvg':60,'weeklyAvg':60,'status':'BALANCED','baseline':{'balancedLow':50,'balancedUpper':80}} for d in dates],
         }
 
-    def test_absent_records_build_and_withhold_training(self):
-        result = self.build({})
-        self.assertIn('id="advisorDecision">Check your data first', result)
-        self.assertIn('Daily <b>Unavailable</b>', result)
+    def test_absent_records_build_and_lower_confidence(self):
+        data = self.embedded_data(self.build({}))
+        self.assertEqual(data['defaultDecision']['confidence'], 'low')
+        self.assertCountEqual(data['defaultDecision']['missingInputs'], ['resting heart rate', 'overnight HRV', 'sleep'])
+        self.assertIsNone(data['current']['daily'].get('stress'))
 
-    def test_stale_records_never_grant_training_clearance(self):
-        result = self.build(self.records(age=10))
-        self.assertIn('id="advisorDecision">Check your data first', result)
-        self.assertNotIn('Train as planned, but keep the first', result)
+    def test_stale_records_are_not_used_as_current_signals(self):
+        data = self.embedded_data(self.build(self.records(age=10)))
+        self.assertIsNone(data['current']['daily'].get('rhr'))
+        self.assertIn('resting heart rate', data['defaultDecision']['missingInputs'])
+        self.assertIn('overnight HRV', data['defaultDecision']['missingInputs'])
 
-    def test_supportive_current_score_cannot_override_mixed_trend(self):
-        result = self.build(self.records())
-        self.assertIn('id="advisorDecision">Keep it controlled', result)
-        self.assertNotIn('Train as planned, but keep the first', result)
-        self.assertNotIn('points to target', result)
-        self.assertNotIn('Speed reserve', result)
-        self.assertIn('Test 30 minutes more time in bed', result)
+    def test_negative_stress_and_missing_hrv_never_support_rhr_spike(self):
+        records = self.records()
+        today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
+        daily = next(item for item in records['daily_summaries.json'] if item['calendarDate'] == today)
+        daily['heartRate'] = {'restingValue': 76, 'minValue': 76, 'maxValue': 76}
+        daily['stress'] = {'avgLevel': -1}
+        hrv = next(item for item in records['hrv.json'] if item['calendarDate'] == today)
+        hrv['lastNightAvg'] = None
+        data = self.embedded_data(self.build(records))
+        self.assertIsNone(data['current']['daily']['stress'])
+        self.assertIsNone(data['current']['hrv']['night'])
+        self.assertEqual(data['defaultDecision']['verdict'], 'REST')
+        self.assertIn('overnight HRV', data['defaultDecision']['missingInputs'])
+        self.assertIn('verify the reading', json.dumps(data['defaultDecision']).lower())
 
 
 if __name__ == '__main__':
