@@ -5,6 +5,7 @@ dashboard.html
 node_modules/
 __pycache__/
 .wrangler/
+qa-*.png
 .dev.vars*
 !.dev.vars.example
 

@@ -15,7 +15,7 @@ class AdvisorBuildTests(unittest.TestCase):
     def build(self, records):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ('build.py', 'advisor_ui.py', 'advisor.js', 'advisor.css', 'advisor_portal.py', 'advisor_engine.py', 'routine.json'):
+            for name in ('build.py', 'advisor_ui.py', 'advisor.js', 'advisor.css', 'advisor_portal.py', 'advisor_engine.py', 'advisor_v2.js', 'advisor_v2.css', 'routine.json'):
                 shutil.copyfile(ROOT / name, root / name)
             (root / 'data').mkdir()
             for name, value in records.items():
@@ -60,9 +60,12 @@ class AdvisorBuildTests(unittest.TestCase):
         data = self.embedded_data(self.build(records))
         self.assertIsNone(data['current']['daily']['stress'])
         self.assertIsNone(data['current']['hrv']['night'])
-        self.assertEqual(data['defaultDecision']['verdict'], 'REST')
+        self.assertEqual(data['defaultDecision']['verdict'], 'UNCONFIRMED')
         self.assertIn('overnight HRV', data['defaultDecision']['missingInputs'])
-        self.assertIn('verify the reading', json.dumps(data['defaultDecision']).lower())
+        self.assertIn('confirm the morning reading', json.dumps(data['defaultDecision']).lower())
+        self.assertFalse(data['planWeeks'][-2]['active'])
+        self.assertEqual(data['adherenceWeeks'], 1)
+        self.assertEqual(data['currentWeek']['easyRunsTotal'], 3)
 
 
 if __name__ == '__main__':

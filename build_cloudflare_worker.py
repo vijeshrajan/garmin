@@ -60,40 +60,54 @@ const securityHeaders = {{
 async function ensureSchema(env) {{
   if (!env.FITNESS_DB) return false;
   await env.FITNESS_DB.batch([
-    env.FITNESS_DB.prepare("CREATE TABLE IF NOT EXISTS checkins(date TEXT PRIMARY KEY, body TEXT, sleep_felt TEXT, motivation INTEGER, time_available_min INTEGER, created_at TEXT)"),
-    env.FITNESS_DB.prepare("CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, date TEXT, planned_session_id TEXT, location TEXT, status TEXT, session_rpe INTEGER, duration_min INTEGER, garmin_activity_id TEXT, notes TEXT)"),
+    env.FITNESS_DB.prepare("CREATE TABLE IF NOT EXISTS checkins(date TEXT PRIMARY KEY, body TEXT, sleep_felt TEXT, motivation INTEGER, time_available_min INTEGER, rhr_confirmation TEXT, created_at TEXT)"),
+    env.FITNESS_DB.prepare("CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, date TEXT, planned_session_id TEXT, location TEXT, status TEXT, session_rpe INTEGER, duration_min INTEGER, garmin_activity_id TEXT, notes TEXT, override INTEGER DEFAULT 0)"),
     env.FITNESS_DB.prepare("CREATE TABLE IF NOT EXISTS sets(id TEXT PRIMARY KEY, session_id TEXT, date TEXT, exercise_id TEXT, set_no INTEGER, weight_kg REAL, reps INTEGER, rir INTEGER, estimated_1rm REAL)"),
-    env.FITNESS_DB.prepare("CREATE TABLE IF NOT EXISTS body_measures(date TEXT PRIMARY KEY, weight_kg REAL, waist_cm REAL)")
+    env.FITNESS_DB.prepare("CREATE TABLE IF NOT EXISTS body_measures(date TEXT PRIMARY KEY, weight_kg REAL, waist_cm REAL)"),
+    env.FITNESS_DB.prepare("CREATE TABLE IF NOT EXISTS profile_settings(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)")
   ]);
+  const [checkinColumns, sessionColumns] = await env.FITNESS_DB.batch([
+    env.FITNESS_DB.prepare("PRAGMA table_info(checkins)"),
+    env.FITNESS_DB.prepare("PRAGMA table_info(sessions)")
+  ]);
+  const migrations = [];
+  if (!checkinColumns.results.some(column => column.name === "rhr_confirmation")) migrations.push(env.FITNESS_DB.prepare("ALTER TABLE checkins ADD COLUMN rhr_confirmation TEXT"));
+  if (!sessionColumns.results.some(column => column.name === "override")) migrations.push(env.FITNESS_DB.prepare("ALTER TABLE sessions ADD COLUMN override INTEGER DEFAULT 0"));
+  if (migrations.length) await env.FITNESS_DB.batch(migrations);
   return true;
 }}
 
 async function stateApi(request, env, url) {{
-  if (!(await ensureSchema(env))) return Response.json({{checkin:null,sessions:[],sets:[],body:[]}}, {{headers:securityHeaders}});
+  if (!(await ensureSchema(env))) return Response.json({{checkin:null,sessions:[],sets:[],body:[],settings:{{}}}}, {{headers:securityHeaders}});
   if (request.method === "GET" && url.pathname === "/api/state") {{
     const date = url.searchParams.get("date") || "";
-    const [checkin, sessions, sets, body] = await env.FITNESS_DB.batch([
+    const [checkin, sessions, sets, body, settings] = await env.FITNESS_DB.batch([
       env.FITNESS_DB.prepare("SELECT * FROM checkins WHERE date = ?").bind(date),
       env.FITNESS_DB.prepare("SELECT * FROM sessions ORDER BY date DESC LIMIT 100"),
       env.FITNESS_DB.prepare("SELECT * FROM sets ORDER BY date DESC, set_no ASC LIMIT 1000"),
-      env.FITNESS_DB.prepare("SELECT * FROM body_measures ORDER BY date DESC LIMIT 100")
+      env.FITNESS_DB.prepare("SELECT * FROM body_measures ORDER BY date DESC LIMIT 100"),
+      env.FITNESS_DB.prepare("SELECT key, value FROM profile_settings")
     ]);
-    return Response.json({{checkin:checkin.results[0]||null,sessions:sessions.results,sets:sets.results,body:body.results}}, {{headers:securityHeaders}});
+    return Response.json({{checkin:checkin.results[0]||null,sessions:sessions.results,sets:sets.results,body:body.results,settings:Object.fromEntries(settings.results.map(row => [row.key,row.value]))}}, {{headers:securityHeaders}});
   }}
   const payload = await request.json();
   if (request.method === "POST" && url.pathname === "/api/checkin") {{
-    await env.FITNESS_DB.prepare("INSERT INTO checkins(date,body,sleep_felt,motivation,time_available_min,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET body=excluded.body,sleep_felt=excluded.sleep_felt,motivation=excluded.motivation,time_available_min=excluded.time_available_min,created_at=excluded.created_at").bind(payload.date,payload.body,payload.sleep_felt,payload.motivation,payload.time_available_min,new Date().toISOString()).run();
+    await env.FITNESS_DB.prepare("INSERT INTO checkins(date,body,sleep_felt,motivation,time_available_min,rhr_confirmation,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET body=excluded.body,sleep_felt=excluded.sleep_felt,motivation=excluded.motivation,time_available_min=excluded.time_available_min,rhr_confirmation=excluded.rhr_confirmation,created_at=excluded.created_at").bind(payload.date,payload.body,payload.sleep_felt,payload.motivation,payload.time_available_min,payload.rhr_confirmation||null,new Date().toISOString()).run();
     return Response.json({{ok:true}}, {{headers:securityHeaders}});
   }}
   if (request.method === "POST" && url.pathname === "/api/session") {{
     const session = payload.session || {{}};
-    const statements = [env.FITNESS_DB.prepare("INSERT INTO sessions(id,date,planned_session_id,location,status,session_rpe,duration_min,garmin_activity_id,notes) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET location=excluded.location,status=excluded.status,session_rpe=excluded.session_rpe,duration_min=excluded.duration_min,notes=excluded.notes").bind(session.id,session.date,session.planned_session_id,session.location,session.status,session.session_rpe,session.duration_min,session.garmin_activity_id||null,session.notes||null),env.FITNESS_DB.prepare("DELETE FROM sets WHERE session_id = ?").bind(session.id)];
+    const statements = [env.FITNESS_DB.prepare("INSERT INTO sessions(id,date,planned_session_id,location,status,session_rpe,duration_min,garmin_activity_id,notes,override) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET location=excluded.location,status=excluded.status,session_rpe=excluded.session_rpe,duration_min=excluded.duration_min,notes=excluded.notes,override=excluded.override").bind(session.id,session.date,session.planned_session_id,session.location,session.status,session.session_rpe,session.duration_min,session.garmin_activity_id||null,session.notes||null,session.override?1:0),env.FITNESS_DB.prepare("DELETE FROM sets WHERE session_id = ?").bind(session.id)];
     for (const set of payload.sets || []) statements.push(env.FITNESS_DB.prepare("INSERT INTO sets(id,session_id,date,exercise_id,set_no,weight_kg,reps,rir,estimated_1rm) VALUES(?,?,?,?,?,?,?,?,?)").bind(set.id,set.session_id,set.date,set.exercise_id,set.set_no,set.weight_kg,set.reps,set.rir,set.estimated_1rm));
     await env.FITNESS_DB.batch(statements);
     return Response.json({{ok:true}}, {{headers:securityHeaders}});
   }}
   if (request.method === "POST" && url.pathname === "/api/body") {{
     await env.FITNESS_DB.prepare("INSERT INTO body_measures(date,weight_kg,waist_cm) VALUES(?,?,?) ON CONFLICT(date) DO UPDATE SET weight_kg=excluded.weight_kg,waist_cm=excluded.waist_cm").bind(payload.date,payload.weight_kg||null,payload.waist_cm||null).run();
+    return Response.json({{ok:true}}, {{headers:securityHeaders}});
+  }}
+  if (request.method === "POST" && url.pathname === "/api/settings") {{
+    await env.FITNESS_DB.prepare("INSERT INTO profile_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at").bind(payload.key,String(payload.value),new Date().toISOString()).run();
     return Response.json({{ok:true}}, {{headers:securityHeaders}});
   }}
   return new Response("Not found", {{status:404,headers:securityHeaders}});
@@ -109,7 +123,7 @@ export default {{
     }}
 
     const url = new URL(request.url);
-    if (url.pathname === "/api/state" || url.pathname === "/api/checkin" || url.pathname === "/api/session" || url.pathname === "/api/body") {{
+    if (url.pathname === "/api/state" || url.pathname === "/api/checkin" || url.pathname === "/api/session" || url.pathname === "/api/body" || url.pathname === "/api/settings") {{
       return stateApi(request, env, url);
     }}
     if (request.method === "POST" && url.pathname === "/api/refresh") {{

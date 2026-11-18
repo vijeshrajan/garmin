@@ -131,9 +131,9 @@
     }
   },
   "coach_flags": [
-    "Day 3 and Day 5 share 7 of their exercises; the portal should show this overlap on the Plan screen.",
-    "Push day at 3-4 sets x 8 exercises is 24-32 working sets; during the restart phase the portal should prescribe the low end.",
-    "Thursday lower-body day is 2 days before the Saturday long run; the portal should flag a long run done with high leg soreness from the check-in."
+    "Day 5 repeats 7 of Day 3's exercises. Consider making Thursday lighter: split squats, RDLs and hip bridges at 2-3 reps in reserve.",
+    "Push day is 24-32 working sets at full volume. Use 3 sets per exercise until the restart phase ends.",
+    "Thursday's leg day is two days before the long run. If legs feel sore on Saturday, shorten the long run instead of pushing pace."
   ]
 }
 

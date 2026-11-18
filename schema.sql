@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS checkins(
   sleep_felt TEXT,
   motivation INTEGER,
   time_available_min INTEGER,
+  rhr_confirmation TEXT,
   created_at TEXT
 );
 
@@ -16,7 +17,8 @@ CREATE TABLE IF NOT EXISTS sessions(
   session_rpe INTEGER,
   duration_min INTEGER,
   garmin_activity_id TEXT,
-  notes TEXT
+  notes TEXT,
+  override INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS sets(
@@ -35,5 +37,11 @@ CREATE TABLE IF NOT EXISTS body_measures(
   date TEXT PRIMARY KEY,
   weight_kg REAL,
   waist_cm REAL
+);
+
+CREATE TABLE IF NOT EXISTS profile_settings(
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TEXT
 );
 

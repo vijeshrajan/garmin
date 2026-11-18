@@ -33,6 +33,8 @@ def decide(today: dict, baselines: dict, checkin: dict, planned: list[dict]) -> 
     hrv_low = measured(baselines.get("hrv_balanced_low"))
     sleep_need_h = measured(baselines.get("sleep_need_h"))
     body = str(checkin.get("body") or "normal").strip().lower()
+    rhr_confirmation = str(checkin.get("rhr_confirmation") or "").strip().lower()
+    rhr_partial = bool(today.get("rhr_partial"))
     missing = []
     for label, value in (("resting heart rate", rhr), ("overnight HRV", hrv), ("sleep", sleep_h)):
         if value is None:
@@ -48,12 +50,22 @@ def decide(today: dict, baselines: dict, checkin: dict, planned: list[dict]) -> 
     elif body in {"ill or in pain", "ill", "in pain"}:
         verdict, fired = "REST", [2]
         reasons.append({"signal": "Check-in", "today": "Ill or in pain", "baseline": "Normal", "read": "Walk only."})
-    elif rhr is not None and rhr_base is not None and rhr >= rhr_base + 10:
+    elif rhr_partial and rhr is not None and rhr_confirmation not in {"normal", "high", "not_sure"}:
+        verdict, fired = "UNCONFIRMED", [0]
+        reasons.append({"signal": "Resting HR", "today": f"{rhr:.0f} bpm (partial-day)", "baseline": f"{rhr_base:.0f} bpm" if rhr_base else "Personal baseline", "read": "Confirm the morning reading on your watch."})
+    elif rhr_partial and rhr_confirmation == "high":
+        verdict, fired = "REST", [3]
+        reasons.append({"signal": "Resting HR", "today": "Confirmed high by you", "baseline": f"{rhr_base:.0f} bpm" if rhr_base else "Personal baseline", "read": "Walk only; verify the reading on the watch."})
+    elif rhr_partial and rhr_confirmation == "not_sure":
+        verdict, fired = "MODIFY", [0]
+        reasons.append({"signal": "Resting HR", "today": "Not sure", "baseline": f"{rhr_base:.0f} bpm" if rhr_base else "Personal baseline", "read": "Use the modified session until confirmed."})
+    elif (not rhr_partial or rhr_confirmation != "normal") and rhr is not None and rhr_base is not None and rhr >= rhr_base + 10:
         verdict, fired = "REST", [3]
         reasons.append({"signal": "Resting HR", "today": f"{rhr:.0f} bpm", "baseline": f"{rhr_base:.0f} bpm", "read": f"+{rhr-rhr_base:.0f}; verify the reading on the watch."})
     else:
         modify_reasons = []
-        if rhr is not None and rhr_base is not None and rhr >= rhr_base + 5:
+        usable_rhr = None if rhr_partial and rhr_confirmation == "normal" else rhr
+        if usable_rhr is not None and rhr_base is not None and usable_rhr >= rhr_base + 5:
             modify_reasons.append((4, {"signal": "Resting HR", "today": f"{rhr:.0f} bpm", "baseline": f"{rhr_base:.0f} bpm", "read": f"+{rhr-rhr_base:.0f}; reduce training strain."}))
         if hrv is not None and hrv_low is not None and hrv < hrv_low:
             modify_reasons.append((4, {"signal": "Overnight HRV", "today": f"{hrv:.0f} ms", "baseline": f"{hrv_low:.0f} ms balanced low", "read": "Below personal balanced range."}))
@@ -69,8 +81,9 @@ def decide(today: dict, baselines: dict, checkin: dict, planned: list[dict]) -> 
 
     if not reasons:
         reasons.append({"signal": "Rule check", "today": "No downgrade rule fired", "baseline": "Personal ranges", "read": "Proceed with the planned session."})
-    if today.get("rhr_partial") and rhr is not None:
-        reasons.append({"signal": "Reading quality", "today": "Partial-day RHR", "baseline": "Complete-day history", "read": "Verify the reading on the watch."})
+    if rhr_partial and rhr is not None and verdict != "UNCONFIRMED":
+        reading = "Confirmed normal by you" if rhr_confirmation == "normal" else "Partial-day RHR"
+        reasons.append({"signal": "Reading quality", "today": reading, "baseline": "Complete-day history", "read": "Daily fallback was not treated as overnight RHR."})
     if hrv is None:
         reasons.append({"signal": "Overnight HRV", "today": "Not measured", "baseline": f"{hrv_low:.0f} ms balanced low" if hrv_low else "Personal range", "read": "Not scored."})
     if measured(today.get("stress")) is None:
@@ -81,6 +94,8 @@ def decide(today: dict, baselines: dict, checkin: dict, planned: list[dict]) -> 
     original = " + ".join(labels) if labels else "Rest"
     if verdict == "STOP":
         adjusted = "No session shown"
+    elif verdict == "UNCONFIRMED":
+        adjusted = "Confirm resting HR before choosing the session"
     elif verdict == "REST":
         adjusted = "Walk only"
     elif verdict == "MODIFY":
@@ -139,6 +154,8 @@ def match_week(plan: dict, activities: list[dict], week_start: date, today: date
     for activity in activities:
         if (day := activity_day(activity)) is not None:
             by_day.setdefault(day, []).append(activity)
+    effective = date.fromisoformat(plan.get("effective_from", "1900-01-01"))
+    week_active = week_start + timedelta(days=6) >= effective
     days, planned_count, done_count, run_done, run_planned = [], 0, 0, 0.0, 0.0
     easy_ok, easy_total = 0, 0
     for offset in range(7):
@@ -146,6 +163,9 @@ def match_week(plan: dict, activities: list[dict], week_start: date, today: date
         available = list(by_day.get(day, []))
         rows = []
         for session in planned_sessions(plan, day):
+            if day < effective:
+                rows.append({**session, "status": "plan_not_active", "activity": None})
+                continue
             if session["kind"] == "rest":
                 rows.append({**session, "status": "rest", "activity": None})
                 continue
@@ -155,6 +175,7 @@ def match_week(plan: dict, activities: list[dict], week_start: date, today: date
             elif session["kind"] == "easy_run":
                 match = next((a for a in available if activity_key(a) in {"treadmill_running", "running"}), None)
                 run_planned += measured(session["details"].get("target_distance_km")) or 0
+                easy_total += 1
             else:
                 match = next((a for a in available if activity_key(a) in {"running", "trail_running"}), None)
                 run_planned += measured(session["details"].get("target_distance_km")) or 0
@@ -170,7 +191,6 @@ def match_week(plan: dict, activities: list[dict], week_start: date, today: date
                 if session["kind"] in {"easy_run", "long_run"}:
                     run_done += distance_km
                 if session["kind"] == "easy_run":
-                    easy_total += 1
                     easy_ok += 0 if too_hard else 1
                 rows.append({**session, "status": status, "activity": {"name": match.get("activityName"), "type": activity_key(match), "duration_min": round(duration_min), "distance_km": round(distance_km, 1), "avg_hr": measured(match.get("averageHR")), "too_hard": too_hard}})
             else:
@@ -179,7 +199,7 @@ def match_week(plan: dict, activities: list[dict], week_start: date, today: date
         for extra in available:
             rows.append({"id": f"extra-{extra.get('activityId', '')}", "kind": "extra", "label": extra.get("activityName") or activity_key(extra).replace("_", " ").title(), "status": "extra", "activity": {"type": activity_key(extra), "duration_min": round((measured(extra.get('duration')) or 0)/60), "distance_km": round((measured(extra.get('distance')) or 0)/1000, 1)}})
         days.append({"date": day.isoformat(), "label": day.strftime("%a %d"), "today": day == today, "sessions": rows})
-    return {"days": days, "planned": planned_count, "done": done_count, "adherence": round(done_count/planned_count*100) if planned_count else None, "runKmDone": round(run_done, 1), "runKmPlanned": round(run_planned, 1), "easyRunsOk": easy_ok, "easyRunsTotal": easy_total}
+    return {"days": days, "active": week_active, "planned": planned_count, "done": done_count, "adherence": round(done_count/planned_count*100) if planned_count else None, "runKmDone": round(run_done, 1), "runKmPlanned": round(run_planned, 1), "easyRunsOk": easy_ok, "easyRunsTotal": easy_total}
 
 
 def epley_1rm(weight_kg: float, reps: int) -> float | None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import statistics
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -10,7 +11,7 @@ from pathlib import Path
 from advisor_engine import decide, match_week, measured, median_or_none, planned_sessions
 
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
+DATA_DIR = Path(os.environ.get("GARMIN_DATA_DIR", ROOT / "data"))
 OUT = ROOT / "dashboard.html"
 INDIA_TIME = timezone(timedelta(hours=5, minutes=30))
 TODAY = datetime.now(INDIA_TIME).date()
@@ -52,6 +53,15 @@ def pearson(pairs):
     xs, ys = zip(*pairs)
     xm, ym = avg(xs), avg(ys)
     denominator = math.sqrt(sum((x-xm)**2 for x in xs) * sum((y-ym)**2 for y in ys))
+    return sum((x-xm)*(y-ym) for x, y in pairs) / denominator if denominator else None
+
+
+def linear_slope(pairs):
+    if len(pairs) < 7:
+        return None
+    xs, ys = zip(*pairs)
+    xm, ym = avg(xs), avg(ys)
+    denominator = sum((x-xm)**2 for x in xs)
     return sum((x-xm)*(y-ym) for x, y in pairs) / denominator if denominator else None
 
 
@@ -142,7 +152,13 @@ def build():
     for offset in range(15, -1, -1):
         start = monday - timedelta(weeks=offset); matched = match_week(plan, raw_activities, start, TODAY)
         matched["start"] = start.isoformat(); matched["rangeLabel"] = f"{start:%d %b}–{start+timedelta(days=6):%d %b}"; matched["current"] = offset == 0; plan_weeks.append(matched)
-    current_week = plan_weeks[-1]; previous4 = plan_weeks[-5:-1]; rolling_done = sum(row["done"] for row in previous4); rolling_planned = sum(row["planned"] for row in previous4); adherence4 = round(rolling_done/rolling_planned*100) if rolling_planned else None
+    current_week = plan_weeks[-1]
+    active_weeks = [row for row in plan_weeks if row["active"]]
+    adherence_window = active_weeks[-4:]
+    rolling_done = sum(row["done"] for row in adherence_window)
+    rolling_planned = sum(row["planned"] for row in adherence_window)
+    adherence4 = round(rolling_done/rolling_planned*100) if rolling_planned else None
+    adherence_weeks = len(adherence_window)
     history = old_week_history(activities); weeks = [{"d": row["start"], "label": row["rangeLabel"].split("–")[0], "distance": row["km"], "load": row["load"], "hours": round(sum(a["durationMin"] for a in activities if row["start"] <= a["date"] <= row["end"])/60, 2), "sessions": row["sessions"]} for row in history]
 
     outdoor_runs = [a for a in activities if a["type"] in {"running", "trail_running"} and a.get("pace") and a.get("avgHr")]
@@ -155,12 +171,22 @@ def build():
     for day, row in sleep.items():
         if row.get("startMs") and row.get("hours"):
             dt = datetime.fromtimestamp(row["startMs"]/1000); bedtime_pairs.append((dt.hour*60+dt.minute+(0 if dt.hour >= 18 else 1440), row["hours"]))
-    patterns = [{"title": "Sleep → resting HR", "r": pearson(sleep_rhr_pairs), "n": len(sleep_rhr_pairs), "action": "Protect sleep and confirm the signal with HRV before changing training."},{"title": "Daytime stress → sleep", "r": pearson(stress_sleep_pairs), "n": len(stress_sleep_pairs), "action": "On high-stress days, use a repeatable 20-minute wind-down."},{"title": "Bedtime → sleep duration", "r": pearson(bedtime_pairs), "n": len(bedtime_pairs), "action": "Run a two-week earlier-lights-out experiment and compare the 7-day average."}]
+    sleep_rhr_slope = linear_slope(sleep_rhr_pairs)
+    stress_sleep_slope = linear_slope(stress_sleep_pairs)
+    bedtime_slope = linear_slope(bedtime_pairs)
+    patterns = [
+        {"title": "Sleep → resting HR", "r": pearson(sleep_rhr_pairs), "n": len(sleep_rhr_pairs), "effect": f"Nights with 1 hour more sleep were paired with resting HR about {abs(sleep_rhr_slope):.1f} bpm {'lower' if sleep_rhr_slope < 0 else 'higher'}." if sleep_rhr_slope is not None else "Not enough matched nights for an effect estimate.", "action": "Protect sleep and confirm the signal with HRV before changing training."},
+        {"title": "Daytime stress → sleep", "r": pearson(stress_sleep_pairs), "n": len(stress_sleep_pairs), "effect": f"A 10-point higher daytime stress level was paired with a sleep score about {abs(stress_sleep_slope*10):.1f} points {'lower' if stress_sleep_slope < 0 else 'higher'}." if stress_sleep_slope is not None else "Not enough matched days for an effect estimate.", "action": "On high-stress days, use a repeatable 20-minute wind-down."},
+        {"title": "Bedtime → sleep duration", "r": pearson(bedtime_pairs), "n": len(bedtime_pairs), "effect": f"Going to bed 1 hour later was paired with about {abs(bedtime_slope*3600):.0f} minutes {'less' if bedtime_slope < 0 else 'more'} sleep." if bedtime_slope is not None else "Not enough nights for an effect estimate.", "action": "Run a two-week earlier-lights-out experiment and compare the 7-day average."},
+    ]
     missing_today = list(default_decision["missingInputs"]); missing_today += ["stress"] if current_day.get("stress") is None else []
     coverage = {"activities": len(activities), "dailyDays": len(daily), "sleepNights": len(sleep), "hrvNights": len(hrv), "weightEntries": len(weights), "missingToday": list(dict.fromkeys(missing_today))}
     series = lambda source, key: [{"d": day.isoformat(), "v": row[key]} for day, row in sorted(source.items()) if row.get(key) is not None and day >= TODAY-timedelta(days=364)]
-    payload = {"today": TODAY.isoformat(), "plan": plan, "planWeeks": plan_weeks, "currentWeek": current_week, "adherence4": adherence4, "current": {"daily": current_day, "sleep": current_sleep, "sleepDate": latest_sleep_day.isoformat() if latest_sleep_day else None, "hrv": current_hrv, "hrvDate": latest_hrv_day.isoformat() if latest_hrv_day else None, "rhrPartial": rhr_partial}, "baselines": baselines, "defaultDecision": default_decision, "todayPlan": today_plan, "activities": activities, "weights": weights, "fitnessAge": fitness, "sameHrPace": same_hr, "longRuns": long_runs, "patterns": patterns, "coverage": coverage, "refreshDisplay": refresh_display, "weeks": weeks, "weekHistory": history, "rhr": series(daily, "rhr"), "hrv": series(hrv, "night"), "sleep": [{"d": day.isoformat(), "v": row["hours"], "deep": row["deep"], "rem": row["rem"], "score": row["score"]} for day, row in sorted(sleep.items()) if day >= TODAY-timedelta(days=364)], "sleepScore": series(sleep, "score"), "bodyBattery": series(daily, "bodyBattery"), "stress": series(daily, "stress"), "spo2": [], "efficiency": [], "weight": weights}
-    OUT.write_text(TEMPLATE.replace("__DATA__", json.dumps(payload,separators=(",", ":")).replace("</", "<\\/")), encoding="utf-8")
+    payload = {"today": TODAY.isoformat(), "plan": plan, "planWeeks": plan_weeks, "currentWeek": current_week, "adherence4": adherence4, "adherenceWeeks": adherence_weeks, "current": {"daily": current_day, "sleep": current_sleep, "sleepDate": latest_sleep_day.isoformat() if latest_sleep_day else None, "hrv": current_hrv, "hrvDate": latest_hrv_day.isoformat() if latest_hrv_day else None, "rhrPartial": rhr_partial, "rhrSource": "daily_summaries.heartRate.restingValue"}, "baselines": baselines, "defaultDecision": default_decision, "todayPlan": today_plan, "activities": activities, "weights": weights, "fitnessAge": fitness, "sameHrPace": same_hr, "longRuns": long_runs, "patterns": patterns, "coverage": coverage, "refreshDisplay": refresh_display, "weeks": weeks, "weekHistory": history, "rhr": series(daily, "rhr"), "hrv": series(hrv, "night"), "sleep": [{"d": day.isoformat(), "v": row["hours"], "deep": row["deep"], "rem": row["rem"], "score": row["score"]} for day, row in sorted(sleep.items()) if day >= TODAY-timedelta(days=364)], "sleepScore": series(sleep, "score"), "bodyBattery": series(daily, "bodyBattery"), "stress": series(daily, "stress"), "spo2": [], "efficiency": [], "weight": weights}
+    page = TEMPLATE.replace("__DATA__", json.dumps(payload,separators=(",", ":")).replace("</", "<\\/"))
+    page = page.replace("</style>", (ROOT / "advisor_v2.css").read_text(encoding="utf-8") + "\n</style>", 1)
+    page = page.replace("</script>", (ROOT / "advisor_v2.js").read_text(encoding="utf-8") + "\n</script>", 1)
+    OUT.write_text(page, encoding="utf-8")
     print(f"Advisor dashboard built: {OUT}")
 
 
